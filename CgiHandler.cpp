@@ -1,14 +1,16 @@
 #include "CgiHandler.hpp"
 #include <sstream>
+#include <cctype>
 #include <iostream>
-
-CgiHandler::CgiHandler(const Request& req, const std::string& scriptPath, std::string interpreter) 
-    : envp_(NULL), cgiPid_(-1), scriptPath_(scriptPath), interpreterPath_(interpreter)
+ 
+CgiHandler::CgiHandler(const Request& req, const Location& loc, const std::string& scriptPath, const std::string& scriptName, const std::string& pathInfo, std::string interpreter) 
+    : envp_(NULL), cgiPid_(-1), scriptPath_(scriptPath), interpreterPath_(interpreter), loc_(loc), scriptName_(scriptName), pathInfo_(pathInfo)
 {
-    pipeIn_[0] = -1; pipeIn_[1] = -1;
-    pipeOut_[0] = -1; pipeOut_[1] = -1;
+    pipeIn_[0] = -1; pipeIn_[1] = -1; // Server -> CGI
+    pipeOut_[0] = -1; pipeOut_[1] = -1; // CGI -> Server
 
-    // The subject says the CGI should be run in the correct directory 
+    // Per the subject, CGI scripts must be executed in the directory where they
+    // are located. This allows them to use relative paths to access other files.
     // So we extract the directory path from the script path.
     size_t lastSlash = scriptPath_.find_last_of('/');
     if (lastSlash != std::string::npos)
@@ -36,13 +38,20 @@ CgiHandler::~CgiHandler()
     if (pipeOut_[1]!= -1) close(pipeOut_[1]);
 }
 
+/**
+ *  Initializes the environment variables for the CGI script.
+ *
+ * This function populates a map with all necessary CGI/1.1 (RFC 3875) variables,
+ * including server information, request details, and all client-provided HTTP
+ * headers prefixed with "HTTP_". This environment is crucial for the script to
+ * understand the context of the request.
+ */
 void CgiHandler::initEnv(const Request& req)
 {
     // 1. Mandatory CGI 1.1 Variables
     envMap_["GATEWAY_INTERFACE"] = "CGI/1.1";
     envMap_["SERVER_PROTOCOL"]   = req.getVersion();
     envMap_["SERVER_SOFTWARE"]   = "webserv/0.1";
-    envMap_["REQUEST_METHOD"]    = req.getMethod();
     envMap_["QUERY_STRING"]      = req.getQuery();
     
     // PHP-CGI specifically requires SCRIPT_FILENAME to locate the file on disk
@@ -51,9 +60,21 @@ void CgiHandler::initEnv(const Request& req)
     // PHP-CGI requires REDIRECT_STATUS=200 to execute properly (security feature)
     envMap_["REDIRECT_STATUS"]   = "200";
 
-    // 2. Handle the Body Size (Works dynamically for both Normal and Chunked!)
+    // Set SCRIPT_NAME and PATH_INFO based on the resolved path from webserv.cpp
+    envMap_["SCRIPT_NAME"]       = scriptName_;
+    envMap_["PATH_INFO"]         = pathInfo_;
+
+    // PATH_TRANSLATED is the filesystem path for the PATH_INFO.
+    if (!pathInfo_.empty()) {
+        std::string pathTranslated = loc_.root;
+        if (!pathTranslated.empty() && pathTranslated[pathTranslated.length() - 1] == '/')
+            pathTranslated.erase(pathTranslated.length() - 1);
+        envMap_["PATH_TRANSLATED"] = pathTranslated + pathInfo_;
+    }
+
+    // 2. Handle the Body Size works dynamically for both normal and chunked!
     // If there is a body, we use the size of our fully decoded unchunkedBody_
-    // because that represents the TRUE size of the data we will pipe to the CGI.
+    // because that represents the true size of the data we will pipe to the CGI.
     if (req.getMethod() == "POST" || req.getMethod() == "PUT")
     {
         std::stringstream ss;
@@ -114,6 +135,20 @@ void CgiHandler::freeEnvp()
     }
 }
 
+/**
+ *  Executes the CGI script in a separate child process.
+ *
+ * This function is the core of the CGI handling. It performs the following steps:
+ * 1. Creates two pipes for bidirectional communication: one for the server to send
+ *    the request body (stdin) and one for the server to receive the script's
+ *    output (stdout).
+ * 2. Forks the server process.
+ * 3. In the child process, it redirects stdin and stdout to the pipes, changes
+ *    the working directory, and then uses `execve` to replace the process image
+ *    with the CGI script interpreter.
+ * 4. In the parent process, it closes the unused ends of the pipes and sets its
+ *    ends to non-blocking mode to integrate with the main `poll()` loop.
+ */
 void CgiHandler::executeCgi()
 {
     // 1. Create the two pipes
@@ -158,8 +193,8 @@ void CgiHandler::executeCgi()
         // D. Change working directory (Subject requirement for relative paths)
         if (chdir(workingDir_.c_str()) != 0)
         {
-            std::cerr << "CGI Error: chdir failed for " << workingDir_ << std::endl;
-            exit(1); 
+            // If chdir fails, we must exit the child process immediately.
+            _exit(1); 
         }
 
         // E. Setup argv for execve
@@ -174,8 +209,8 @@ void CgiHandler::executeCgi()
         execve(interpreterPath_.c_str(), argv, envp_);
 
         // G. If execve returns, it means it FAILED (e.g., file not found/permissions)
-        std::cerr << "CGI Error: execve failed for " << scriptPath_ << std::endl;
-        exit(1); 
+        // The child process MUST terminate to prevent a fork bomb.
+        _exit(1); 
     }
     
     // ==========================================================

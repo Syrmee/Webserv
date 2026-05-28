@@ -33,6 +33,20 @@ static const char* mimeFromExt(const std::string& ext)
     return "application/octet-stream";
 }
 
+/**
+ *  Builds a successful HTTP 200 OK response for a static file.
+ *
+ * This function is called to serve a file from the filesystem (e.g., an HTML
+ * page, an image, or a CSS file).
+ * 1. Reads the entire file content into a string buffer in binary mode.
+ * 2. Determines the correct MIME type based on the file's extension.
+ * 3. Constructs a complete HTTP response with all necessary headers, including
+ *    `Content-Type`, `Content-Length`, and `Connection`.
+ * 4. If the request method was `HEAD`, it returns only the headers. Otherwise,
+ *    it returns the headers followed by the file's content as the body.
+ *
+ *  A string containing the full HTTP response.
+ */
 std::string buildSuccess(const Request& req,const std::string& fsPath, const ServerConfig* cfg)
 {
     const std::string version = req.getVersion().empty() ? "HTTP/1.1" : req.getVersion();
@@ -56,7 +70,7 @@ std::string buildSuccess(const Request& req,const std::string& fsPath, const Ser
     std::ostringstream out;
     out << version << " 200 OK\r\n"
         << "Date: " << httpDateNow() << "\r\n"
-        << "Server: webserv/0.1\r\n"
+        << "Server: webserv/1.0\r\n"
         << "Content-Type: " << contentType << "\r\n"
         << "Content-Length: " << body.size() << "\r\n"
         << "Connection: " << (keepAlive ? "keep-alive" : "close") << "\r\n"

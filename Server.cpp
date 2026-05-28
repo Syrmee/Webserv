@@ -1,5 +1,6 @@
 #include "Server.hpp"
 #include <cerrno>
+#include <cstring>
 #include <sys/socket.h> 
 #include <fcntl.h>
 #include <arpa/inet.h>
@@ -13,7 +14,20 @@ Server::~Server()
     if (listen_fd_ >= 0)
         ::close(listen_fd_);
 }
-    
+
+/**
+ *  Creates, configures, binds, and listens on a server socket.
+ *
+ * This function encapsulates the standard boilerplate for setting up a listening
+ * socket for the server.
+ * 1. Creates a TCP socket.
+ * 2. Sets the `SO_REUSEADDR` option to allow the server to restart quickly.
+ * 3. Makes the socket non-blocking (`O_NONBLOCK`) so that `accept()` doesn't freeze the server.
+ * 4. Binds the socket to the host and port specified in the configuration.
+ * 5. Puts the socket into listening mode to accept incoming connections.
+ *
+ * return `true` if all steps are successful, `false` otherwise.
+ */
 bool Server::bindAndListen()
 {
     

@@ -7,7 +7,7 @@
 class Request;
 
 // Filesystem helpers
-std::string resolveFullPath(const Location& loc, const Request& req);
+std::string resolveFullPath(const Location& loc, const std::string& path);
 std::string buildDirectoryListing(const Request& req, const std::string& fsPath);
 
 // Date helper
@@ -21,7 +21,7 @@ bool isReadable(const std::string& path);
 
 // More 
 bool        shouldKeepAlive(const Request& request, int status);
-std::string buildError(int code, const Request& request, const ServerConfig* cfg);
+std::string buildError(int code, const Request& request, const ServerConfig* cfg, const std::string& allowedMethods = "");
 std::string buildRedirect(const Request& request, int status, const std::string& location);
 std::string buildSuccess(const Request& req,const std::string& fsPath, const ServerConfig* cfg);
 std::string trim(const std::string& str);

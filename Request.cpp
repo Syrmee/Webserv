@@ -74,6 +74,14 @@ static bool isValidToken(const std::string& m)
     }
     return true;
 }
+
+/**
+ *  Parses the HTTP method from the request line.
+ *
+ * Validates that the method is a valid token and checks if it is one of the
+ * implemented methods (GET, POST, DELETE, HEAD). If the method is valid but not
+ * implemented (e.g., PUT, TRACE), it returns a 501 Not Implemented error.
+ */
 int    Request::parseMethod()
 {
     std::cout << method_ << std::endl;
@@ -156,6 +164,17 @@ static int normalizePath(std::string& path)
 }
 
 
+/**
+ *  Parses and normalizes the request URI.
+ *
+ * This function performs several critical tasks:
+ * 1. Separates the path from the query string (e.g., "/path?query=1").
+ * 2. Rejects requests containing forbidden characters or fragments (#).
+ * 3. Validates that the path starts with a '/'.
+ * 4. Calls `normalizePath` to resolve `.` and `..` segments, preventing
+ *    path traversal attacks.
+ * return 0 on success, or an HTTP error code on failure.
+ */
 int  Request::parsePath()
 {
     if (path_.empty())
@@ -205,6 +224,13 @@ int  Request::parsePath()
     return (0);
 
 }
+
+/**
+ *  Parses the HTTP protocol version from the request line.
+ *
+ * Ensures the version is one of the supported protocols (HTTP/1.0 or HTTP/1.1).
+ * It also enforces the HTTP/1.1 rule that a "Host" header must be present.
+ */
 int    Request::parseVersion()
 {
     if (version_ == "HTTP/1.1" && header_.find("host") == header_.end())
@@ -214,6 +240,20 @@ int    Request::parseVersion()
     return 0;
 }
 
+/**
+ *  Parses the entire HTTP request header.
+ *
+ * This is the main entry point for parsing an incoming request. It reads the
+ * request from the provided buffer line by line.
+ * 1. Parses the request line (Method, URI, Version).
+ * 2. Calls the specific parsers for method, path, and version.
+ * 3. Reads all subsequent header fields (e.g., "Host: example.com") into a map.
+ * 4. Handles header value merging for fields that allow it (e.g., Cookie).
+ * 5. Calls `validateHeaders` to perform security and consistency checks.
+ * 6. Determines if the request has a chunked transfer encoding.
+ *
+ *  buffer A C-string containing the raw HTTP request headers.
+ */
 void    Request::parseHeader(const char *buffer)
 {
     std::istringstream req(buffer);
@@ -331,6 +371,19 @@ void    Request::parseHeader(const char *buffer)
     //printMap(); // for testing !
 }
 
+/**
+ *  Parses a portion of a chunked request body.
+ *
+ * This function implements a state machine to decode a chunked transfer stream.
+ * It can be called multiple times as new data arrives on the socket.
+ * - State 0: Expects a line with the hexadecimal size of the next chunk.
+ * - State 1: Expects to read the raw data of the chunk itself.
+ * - State 2: Expects the final empty chunk and trailing CRLF.
+ *
+ * rawData The raw data buffer from the socket, which is consumed as it's parsed.
+ *  decodedBody The output string where the clean, decoded body is appended.
+ * return `true` if the entire chunked body has been successfully parsed, `false` otherwise.
+ */
 bool Request::parseChunkedBody(std::string& rawData, std::string& decodedBody)
 {
     while (!rawData.empty() && !chunkedCompleted_)

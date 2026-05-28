@@ -1,15 +1,14 @@
 #pragma once
 
 #include "Request.hpp"
+#include "Config.hpp"
+#include "HttpError.hpp"
 #include <string>
 #include <map>
-#include <vector>
 #include <unistd.h>
-#include <cstdlib>
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include "HttpError.hpp"
 
 class CgiHandler {
 private:
@@ -23,6 +22,9 @@ private:
     std::string scriptPath_;
     std::string workingDir_;
     std::string interpreterPath_;
+    const Location& loc_;
+    std::string scriptName_;
+    std::string pathInfo_;
 
     // Private helpers
     void initEnv(const Request& req);
@@ -30,8 +32,7 @@ private:
     void freeEnvp();
 
 public:
-    // Constructor sets up the environment and paths
-    CgiHandler(const Request& req, const std::string& scriptPath, std::string interpreter);
+    CgiHandler(const Request& req, const Location& loc, const std::string& scriptPath, const std::string& scriptName, const std::string& pathInfo, std::string interpreter);
     ~CgiHandler();
 
     // The function that actually calls fork() and execve()

@@ -11,6 +11,7 @@
 #include <poll.h>
 #include <map>
 #include <vector>
+#include <cstdlib>
 #include <iostream>
 
 static volatile sig_atomic_t g_running = 1;
@@ -28,9 +29,17 @@ void addToPoll(std::vector<struct pollfd>& fds, int fd, short events) {
     fds.push_back(pfd);
 }
 
+/**
+ *  Safely closes a client connection and marks its FD for removal.
+ *
+ * This function closes the file descriptor, deletes the associated Connection
+ * object, and adds the FD to a list of descriptors to be removed from the main
+ * poll vector. This "deferred deletion" pattern prevents iterator invalidation
+ * within the main event loop.
+ */
 void closeClient(int fd, std::map<int, Connection*>& conns, 
-                 std::vector<struct pollfd>& fds, size_t& i,
-                 std::map<int, const ServerConfig*>& cfg_map) 
+                 std::map<int, const ServerConfig*>& cfg_map,
+                 std::vector<int>& fds_to_remove) 
 {
     close(fd);
     
@@ -42,11 +51,17 @@ void closeClient(int fd, std::map<int, Connection*>& conns,
     }
     
     cfg_map.erase(fd);
-    fds.erase(fds.begin() + i);
-    i--; // Adjust iterator
+    fds_to_remove.push_back(fd);
 }
 
-// Returns a pointer to the best matching Location, or NULL if none found.
+/**
+ *  Finds the best matching location block for a given request URI.
+ *
+ * The "best" match is defined as the location with the longest URI prefix that
+ * matches the start of the request URI. For example, for a request to "/api/users",
+ * a location block for "/api" would be a better match than a location for "/".
+ * return A pointer to the best matching Location, or NULL if none found.
+ */
 const Location* findBestLocation(const ServerConfig* srvCfg, const std::string& uri)
 {
     const Location* bestMatch = NULL;
@@ -59,7 +74,7 @@ const Location* findBestLocation(const ServerConfig* srvCfg, const std::string& 
         // Check if the URI starts with this location's path (Prefix Match)
         if (uri.compare(0, loc.uri.length(), loc.uri) == 0)
         {    
-            // We found a match! Is it better (longer) than the previous one?
+            // We found a match. Is it better  than the previous one?
             if (loc.uri.length() > bestLength)
             {
                 bestMatch = &loc;
@@ -70,6 +85,20 @@ const Location* findBestLocation(const ServerConfig* srvCfg, const std::string& 
     return bestMatch;
 }
 
+/**
+ *  Processes the raw output of a CGI script into a valid HTTP response.
+ *
+ * CGI scripts do not return a full HTTP response. Instead, they can provide
+ * headers and a body. This function parses that output.
+ * 1. It separates the script's output into headers and a body.
+ * 2. It specifically looks for a "Status:" header (e.g., "Status: 404 Not Found")
+ *    which it uses to generate the HTTP status line. If not found, it defaults to 200 OK.
+ * 3. It constructs a proper HTTP response, adding standard server headers and
+ *    calculating the `Content-Length` of the body provided by the script.
+ *
+ * rawOutput The complete string read from the CGI script's stdout.
+ * A string containing the full, valid HTTP response.
+ */
 std::string processCgiResponse(const std::string& rawOutput, const Request& req) {
     std::string headers;
     std::string body;
@@ -125,24 +154,59 @@ std::string processCgiResponse(const std::string& rawOutput, const Request& req)
     return ss.str();
 }
 
-// Returns FALSE if connection should be closed, TRUE to keep alive.
+/**
+ * Handles all logic for an existing client connection based on poll events.
+ *
+ * This is the primary request-handling function. It is called when an existing
+ * client connection has data to read or is ready to receive data.
+ *
+ * If the event is POLLIN (data available to read):
+ * 1. Reads data from the socket into the connection's buffer.
+ * 2. If headers are complete, it parses them, including the body (handling both
+ *    `Content-Length` and chunked encoding).
+ * 3. Performs routing by finding the best location block.
+ * 4. Validates the request against the location's rules (e.g., allowed methods).
+ * 5. Dispatches the request to the appropriate handler: CGI, static file serving,
+ *    directory listing, file upload (POST), or file deletion (DELETE).
+ * 6. The handler generates a response and places it in the connection's output buffer.
+ *
+ * If the event is POLLOUT (socket ready to write):
+ * 1. Writes data from the output buffer to the socket.
+ */
 bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, short& poll_events,
                   std::vector<struct pollfd>& fds,
                   std::map<int, Connection*>& cgi_read_map,
                   std::map<int, Connection*>& cgi_write_map)
 {
-    // 1. Handle Errors/Hangups immediately
-    if (revents & (POLLHUP | POLLERR | POLLNVAL))
+    // 1. Handle critical socket errors immediately
+    if (revents & (POLLERR | POLLNVAL))
+        return false;
+
+    // Only close on POLLHUP if we have nothing left to send or read
+    if ((revents & POLLHUP) && !(revents & POLLIN) && conn->out().empty())
         return false;
 
     // 2. READ (Client sent data)
-    if (revents & POLLIN)
+    if (revents & (POLLIN | POLLHUP))
     {
         try {
-            int bytes = conn->readFromSocket();
-            if (bytes == 0)
-                return false; // Client closed
+            // Read available data. We don't return on 0 here because 
+            // we must process any data already in the buffer first.
+            int bytesRead = conn->readFromSocket();
+            // If client closed (EOF) and we have no data to process and nothing to send, close.
+            if (bytesRead == 0 && conn->in().empty() && conn->out().empty())
+                return false;
+        } catch (const std::exception& e) {
+            return false;
+        }
+    }
 
+    // 2.5. PROCESS (Loop to handle Pipelined requests)
+    size_t headerEnd;
+    while (conn->out().empty() && (headerEnd = conn->in().find("\r\n\r\n")) != std::string::npos)
+    {
+        try 
+        {
             // Check for end of headers
             size_t headerEnd = conn->in().find("\r\n\r\n");
             if (headerEnd != std::string::npos)
@@ -152,8 +216,13 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
                 conn->request().parseHeader(conn->in().c_str());
 
                 // B. Check Config Limits 
+                size_t effective_max_body_size = srvCfg->client_max_body_size;
+                const Location* loc = findBestLocation(srvCfg, conn->request().getPath());
+                if (loc && loc->client_max_body_size != 0)
+                    effective_max_body_size = loc->client_max_body_size;
+
                 size_t contentLength = conn->request().getContentLength();
-                if (contentLength > srvCfg->client_max_body_size)
+                if (contentLength > effective_max_body_size)
                     throw Request::ParseError(413);
 
                 // C. Check for Full Body
@@ -166,11 +235,14 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
                     // 1. isolate body from the socket buffer
                     std::string rawBody = conn->in().substr(headerSize);
                     // 2. feed it to unchunker
-                    bool isDone = conn->request().parseChunkedBody(rawBody, conn->request().getUnchunkedBody());
-                    // 3. left overs goes back to socket buffer
-                    conn->in() = conn->in().substr(0, headerSize) + rawBody;
+                    std::string decoded;
+                    bool isDone = conn->request().parseChunkedBody(rawBody, decoded);
+                    conn->request().getUnchunkedBody() += decoded;
+                    // 3. left overs (the next pipelined request) goes back to socket buffer
+                    std::string head = conn->in().substr(0, headerSize);
+                    conn->in() = head + rawBody;
                     if (!isDone)
-                        return true; // body incomplete, wait for more data
+                        break; 
                     // 4. finnal body
                     finalBody = conn->request().getUnchunkedBody();
                     bytesToConsume = headerSize;
@@ -180,7 +252,7 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
                     bytesToConsume = headerSize + contentLength;
                     size_t totalRequestSize = headerSize + contentLength;
                     if (conn->in().size() < totalRequestSize)
-                        return true; // body incomplete
+                        break;
                     
                     finalBody = conn->in().substr(headerSize, contentLength);
                     conn->request().setUnchunkedBody(finalBody);
@@ -190,7 +262,6 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
                 // =============================================================
                 
                 // 1. Find Best Location
-                const Location* loc = findBestLocation(srvCfg, conn->request().getPath());
                 if (!loc)
                     throw HttpError(404);
 
@@ -210,74 +281,85 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
                     }
                 }
                 if (!methodAllowed)
-                    throw HttpError(405); // Method Not Allowed
+                {
+                    // Construct the "Allow" header string organically
+                    std::string allowed = "";
+                    if (loc->methods.empty()) allowed = "GET";
+                    else {
+                        for (size_t k = 0; k < loc->methods.size(); ++k) {
+                            allowed += loc->methods[k];
+                            if (k + 1 < loc->methods.size()) allowed += ", ";
+                        }
+                    }
+                    throw HttpError(405, allowed); // Pass it via the exception
+                }
 
                 // 3. Handle Redirection
                 if (!loc->return_url.empty())
                     throw HttpError(loc->return_code, loc->return_url);
-
-                // 4. Resolve Path
-                std::string root = loc->root.empty() ? "/tmp/www" : loc->root;
+                
+                // =============================================================
+                // 4. PATH RESOLUTION & CGI HANDLING
+                // =============================================================
                 std::string fsPath;
+                bool cgiRequestHandled = false;
 
-                bool isCgiRequest = false;
-                if (!loc->cgi_extension.empty())
-                {
-                    std::string path = conn->request().getPath();
-                    std::string ext = loc->cgi_extension;
-                    if (path.length() >= ext.length() && 
-                        path.substr(path.length() - ext.length()) == ext)
-                        isCgiRequest = true;
-                }
+                if (!loc->cgi_extension.empty()) {
+                    std::string requestPath = conn->request().getPath();
+                    std::string pathInfo;
+                    std::string scriptName;
 
-                // manually constructing path without checking existence of file/dir for POST
-                if (conn->request().getMethod() == "POST" && !isCgiRequest)
-                {
-                    fsPath = root;
-                    if (!fsPath.empty() && fsPath[fsPath.size() - 1] == '/')
-                        fsPath.erase(fsPath.size() - 1);
-                    fsPath += conn->request().getPath();    
-                }
-                else
-                    fsPath = resolveFullPath(*loc, conn->request());
-
-                // =============================================================
-                // [NEW] CGI INTERCEPTION
-                // =============================================================
-                if (loc && !loc->cgi_extension.empty())
-                {
-                    std::string ext = loc->cgi_extension;
-                    if (fsPath.length() >= ext.length() && fsPath.substr(fsPath.length() - ext.length()) == ext) 
+                    // Walk backwards up the request URI to find the script file
+                    for (size_t split_pos = requestPath.length(); split_pos != std::string::npos; split_pos = (split_pos > 0) ? requestPath.rfind('/', split_pos - 1) : std::string::npos)
                     {
-                        if (!isFile(fsPath)) throw HttpError(404);
-                        std::cout << "\n[DEBUG] Path requested: " << conn->request().getPath() << std::endl;
-                        std::cout << "[DEBUG] Query string:   " << conn->request().getQuery() << std::endl;
-                        std::cout << "[DEBUG] Target file:    " << fsPath << std::endl;
+                        scriptName = requestPath.substr(0, split_pos);
+                        if (scriptName.empty() && requestPath[0] == '/') scriptName = "/"; // Handle root case
+                        
+                        try { fsPath = resolveFullPath(*loc, scriptName); }
+                        catch (const HttpError&) { fsPath.clear(); }
+
+                        if (!fsPath.empty() && isFile(fsPath) && fsPath.length() >= loc->cgi_extension.length() &&
+                            fsPath.substr(fsPath.length() - loc->cgi_extension.length()) == loc->cgi_extension)
+                        {
+                            // Found it! The rest of the path is PATH_INFO.
+                            if (split_pos < requestPath.length())
+                                pathInfo = requestPath.substr(split_pos);
+
+                            cgiRequestHandled = true;
+                            break;
+                        }
+                    }
+
+                    if (cgiRequestHandled) {
                         if (access(fsPath.c_str(), R_OK) != 0) throw HttpError(403);
 
                         // 1. Create and execute the CGI process
-                        conn->setCgiHandler(new CgiHandler(conn->request(), fsPath, loc->cgi_path));
+                        conn->setCgiHandler(new CgiHandler(conn->request(), *loc, fsPath, scriptName, pathInfo, loc->cgi_path));
                         conn->getCgiHandler()->executeCgi();
 
                         // 2. Get the new pipe File Descriptors
                         int readFd = conn->getCgiHandler()->getReadFd();
                         int writeFd = conn->getCgiHandler()->getWriteFd();
 
-                        // 3. Add them to the main poll() array
+
                         addToPoll(fds, readFd, POLLIN);
                         addToPoll(fds, writeFd, POLLOUT);
 
-                        // 4. Map them to THIS client connection
+
                         cgi_read_map[readFd] = conn;
                         cgi_write_map[writeFd] = conn;
 
-                        // 5. Tell the server to consume the headers from the input buffer
-                        conn->in().erase(0, bytesToConsume);
 
-                        // 6. Keep connection alive while CGI runs!
+                        conn->in().erase(0, bytesToConsume);
+                        
                         return true; 
                     }
                 }
+
+                // If not a CGI request, or if script lookup failed, do normal path resolution.
+                fsPath = resolveFullPath(*loc, conn->request().getPath());
+
+                // 5. Handle standard methods (GET, POST, DELETE)
                 if (conn->request().getMethod() == "GET" || conn->request().getMethod() == "HEAD")
                 {
                     // 5. Handle Directory
@@ -317,6 +399,10 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
 
                         // 4. If neither worked -> Forbidden
                         throw HttpError(403);
+                    }
+                    else if (!isFile(fsPath))
+                    {
+                        throw HttpError(404);
                     }
 
                     serve_file:
@@ -399,43 +485,78 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
                 }
                 // F. Consume Input
                 conn->in().erase(0, bytesToConsume);
-
             }
         }
         catch (const Request::ParseError& e)
         {
             conn->out() = buildError(e.status(), conn->request(), srvCfg);
             conn->in().clear();
+            break;
         }
         catch (const HttpError& he)
         {
-            if (he.status() >= 300 && he.status() < 400)
-                conn->out() = buildRedirect(conn->request(), he.status(), he.location());
+            int status = he.status();
+            // Calculate how many bytes the current request occupied
+            size_t headPos = conn->in().find("\r\n\r\n");
+            if (headPos != std::string::npos) {
+                size_t toRemove = headPos + 4 + conn->request().getContentLength();
+                // Only erase the current request, preserving any 'pipelined' data
+                if (toRemove > conn->in().size() || conn->request().isChunked()) toRemove = conn->in().size();
+                conn->in().erase(0, toRemove);
+            } else {
+                conn->in().clear();
+            }
+
+            if (status >= 300 && status < 400)
+                conn->out() = buildRedirect(conn->request(), status, he.location());
+            else if (status == 405)
+                conn->out() = buildError(status, conn->request(), srvCfg, he.location());
             else
-                conn->out() = buildError(he.status(), conn->request(), srvCfg);
-            conn->in().clear();
+                conn->out() = buildError(status, conn->request(), srvCfg);
+            break;
         }
         catch (const std::exception& e)
         {
             std::cerr << "Request Error: " << e.what() << std::endl;
             conn->out() = buildError(500, conn->request(), srvCfg);
             conn->in().clear();
+            break;
         }
     }
 
     // 3. WRITE (Ready to send response)
     if (revents & POLLOUT)
     {
+        int currentStatus = 200;
+        if (conn->out().find(" 405 ") != std::string::npos) currentStatus = 405;
+        else if (conn->out().find(" 413 ") != std::string::npos) currentStatus = 413;
+        else if (conn->out().find(" 400 ") != std::string::npos) currentStatus = 400;
+        else if (conn->out().find(" 403 ") != std::string::npos) currentStatus = 403;
+        else if (conn->out().find(" 404 ") != std::string::npos) currentStatus = 404;
+        else if (conn->out().find(" 500 ") != std::string::npos) currentStatus = 500;
+        else if (conn->out().find(" 400 ") != std::string::npos) currentStatus = 400;
+        else if (conn->out().find(" 500 ") != std::string::npos) currentStatus = 500;
+        else if (conn->out().find(" 301 ") != std::string::npos) currentStatus = 301;
+        else if (conn->out().find(" 201 ") != std::string::npos) currentStatus = 201;
+        else if (conn->out().find(" 204 ") != std::string::npos) currentStatus = 204;
+
+        bool keep = shouldKeepAlive(conn->request(), currentStatus);
+
         int bytes = conn->writeToSocket();
         if (bytes < 0)
             return false;
 
         if (conn->out().empty())
         {
-            if (!shouldKeepAlive(conn->request(), 200))
+            if (!keep)
                 return false;
         }
     }
+
+    // Final check: if the socket is half-closed (read 0 previously) 
+    // and we've finished sending everything, close now.
+    if ((revents & POLLHUP) && conn->out().empty())
+        return false;
 
     // 4. Update Poll Flags
     if (!conn->out().empty())
@@ -446,6 +567,17 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
     return true;
 }
 
+/**
+ *  The main function and entry point for the webserver.
+ *
+ * The `main` function orchestrates the entire server lifecycle:
+ * 1. Parses the configuration file provided as a command-line argument.
+ * 2. Sets up server sockets for each configured host:port, binding and listening on them.
+ * 3. Initializes the `poll()` structure with the listening sockets.
+ * 4. Enters the main event loop, which uses `poll()` to wait for I/O events on all
+ *    file descriptors (listeners, clients, and CGI pipes).
+ * 5. Dispatches events to the appropriate handlers until a SIGINT is received.
+ */
 
 int main(int argc, char **argv)
 {
@@ -458,9 +590,7 @@ int main(int argc, char **argv)
     signal(SIGINT, on_sigint);
 
     try {
-        // ====================================================================
-        // 1. CONFIGURATION PHASE
-        // ====================================================================
+        // configuration setup
         Config config;
         config.parse(argv[1]);
 
@@ -491,7 +621,7 @@ int main(int argc, char **argv)
 
         if (servers.empty())
         {
-            std::cerr << "No servers could be started." << std::endl;
+            std::cerr << "No server" << std::endl;
             return 1;
         }
 
@@ -521,8 +651,10 @@ int main(int argc, char **argv)
 
         while (g_running)
         {
+            std::vector<int> fds_to_remove; // Collect FDs to be removed after loop
+
             // A. Wait for events (1000ms timeout)
-            int ret = poll(poll_fds.data(), poll_fds.size(), 1000);
+            int ret = poll(&poll_fds[0], poll_fds.size(), 1000);
             
             if (ret < 0)
             {
@@ -578,35 +710,27 @@ int main(int argc, char **argv)
                     if ((revents & POLLIN) || (revents & POLLHUP))
                     {
                         char buffer[4096];
-                        ssize_t bytes = read(fd, buffer, sizeof(buffer));
+                        ssize_t bytes = read(fd, buffer, sizeof(buffer) - 1);
 
                         if (bytes > 0){
-                            std::cout << "[DEBUG] Read " << bytes << " bytes from Python script." << std::endl;
                             conn->getCgiOutput().append(buffer, bytes);}
                         else if (bytes == 0) // EOF
                         {
-                            std::cout << "[DEBUG] Python script finished! Processing response..." << std::endl;
-                            // 1. wait for child logic
                             int status;
                             waitpid(conn->getCgiHandler()->getPid(), &status, 0);
                             conn->getCgiHandler()->clearPid();
-                            // 2. process response
                             conn->out() = processCgiResponse(conn->getCgiOutput(), conn->request());
-                            // 3. cleanup
-                            std::cout << "[DEBUG] Final HTTP Response generated. Length: " << conn->out().length() << std::endl;
                             delete conn->getCgiHandler();
                             conn->setCgiHandler(NULL);
                             // 4. close pipe
                             close(fd);
                             cgi_read_map.erase(fd);
-                            poll_fds.erase(poll_fds.begin() + i);
-                            i--;
+                            fds_to_remove.push_back(fd);
                             // 5. switch client back to write mode
                             for (size_t k = 0; k < poll_fds.size(); ++k)
                             {
                                 if (poll_fds[k].fd == conn->fd())
                                 {
-                                    std::cout << "[DEBUG] Switching Client FD " << conn->fd() << " to POLLOUT!" << std::endl;
                                     poll_fds[k].events = POLLIN | POLLOUT;
                                     break;
                                 }
@@ -618,8 +742,7 @@ int main(int argc, char **argv)
                         // Handle crash/hangup
                         close(fd);
                         cgi_read_map.erase(fd);
-                        poll_fds.erase(poll_fds.begin() + i);
-                        i--;
+                        fds_to_remove.push_back(fd);
                     }
                 }
 
@@ -650,8 +773,7 @@ int main(int argc, char **argv)
                         {
                             close(fd);
                             cgi_write_map.erase(fd);
-                            poll_fds.erase(poll_fds.begin() + i);
-                            i--;
+                            fds_to_remove.push_back(fd);
                         }
                     }
                     // handle Errors
@@ -659,8 +781,7 @@ int main(int argc, char **argv)
                     {
                         close(fd);
                         cgi_write_map.erase(fd);
-                        poll_fds.erase(poll_fds.begin() + i);
-                        i--;
+                        fds_to_remove.push_back(fd);
                     }
                 }
 
@@ -672,7 +793,7 @@ int main(int argc, char **argv)
                     // If FD is not in connections map, it's a ghost. Safety check.
                     if (connections.find(fd) == connections.end())
                     {
-                        closeClient(fd, connections, poll_fds, i, client_to_config);
+                        closeClient(fd, connections, client_to_config, fds_to_remove);
                         continue;
                     }
 
@@ -689,7 +810,18 @@ int main(int argc, char **argv)
                     );
 
                     if (!keepAlive)
-                        closeClient(fd, connections, poll_fds, i, client_to_config);
+                        closeClient(fd, connections, client_to_config, fds_to_remove);
+                }
+            }
+
+            // Clean up closed FDs from poll_fds outside the main loop to prevent iterator invalidation
+            for (size_t k = 0; k < fds_to_remove.size(); ++k) {
+                for (std::vector<struct pollfd>::iterator it = poll_fds.begin(); it != poll_fds.end(); ) {
+                    if (it->fd == fds_to_remove[k]) {
+                        it = poll_fds.erase(it);
+                    } else {
+                        ++it;
+                    }
                 }
             }
         }
@@ -708,7 +840,7 @@ int main(int argc, char **argv)
     }
     catch (const std::exception &e)
     {
-        std::cerr << "Fatal Error: " << e.what() << std::endl;
+        std::cerr << "Error: " << e.what() << std::endl;
         return 1;
     }
 

@@ -85,6 +85,21 @@ size_t  Request::getContentLength() const
     return (len);
 }
 
+/**
+ *  Appends a header to the internal map, handling duplicates correctly.
+ *
+ * According to RFC 7230, some headers like `Host` or `Content-Length` MUST NOT
+ * appear more than once. This function enforces this by throwing a 400 error
+ * if a duplicate is found.
+ *
+ * For other headers, it correctly merges values. It uses a comma-separated
+ * list for general headers and a semicolon-separated list specifically for
+ * the `Cookie` header, as required by their respective RFCs.
+ *
+ *  key The lowercase header field name.
+ *  value The header field value.
+ */
+
 void    Request::HeaderDuplicateCheckAndAppend(const std::string &key, const std::string &value)
 {
     if (header_.find(key) == header_.end())
@@ -101,6 +116,23 @@ void    Request::HeaderDuplicateCheckAndAppend(const std::string &key, const std
     else
         header_[key] += ", " + value;
 }
+
+/**
+ *  Validates all parsed headers against configured limits and RFC rules.
+ *
+ * This critical function performs several checks after all headers are parsed:
+ * 1. Enforces limits on the total number of headers and their approximate total size.
+ * 2. Ensures the `Host` header is present for HTTP/1.1 requests and is not duplicated.
+ * 3. Prevents HTTP Request Smuggling by rejecting control characters in header values.
+ * 4. Enforces consistency between `Transfer-Encoding` and `Content-Length`. A request
+ *    cannot have both `Transfer-Encoding: chunked` and a `Content-Length`.
+ * 5. Validates that the `Content-Length` value, if present, is a valid non-negative
+ *    number and does not exceed the configured maximum body size.
+ *
+ *  lim A struct containing the configured header limits.
+ * return 0 on success, or an appropriate HTTP error code on failure.
+ */
+
 
 int Request::validateHeaders(const HeaderLimits& lim)
 {
