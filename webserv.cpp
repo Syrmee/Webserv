@@ -767,7 +767,7 @@ int main(int argc, char **argv)
                             ssize_t written = write(fd, body.c_str() + bytesAlreadySent, remaining);
                             if (written > 0)
                                 conn->addCgiBytesWritten(written);
-							else if (written < -1)
+							else if (written == -1)
 								continue; // Continue and pray the error state is caught by poll (POLLERR)
                         }
                         // 3. Close if done
