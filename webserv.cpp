@@ -760,16 +760,27 @@ int main(int argc, char **argv)
                         size_t bytesToSend = body.size();
                         size_t bytesAlreadySent = conn->getCgiBytesWritten();
 
-                        // 2, write whats left
+                        // 2. write whats left
                         size_t remaining = bytesToSend - bytesAlreadySent;
                         if (remaining > 0)
                         {
                             ssize_t written = write(fd, body.c_str() + bytesAlreadySent, remaining);
+                            
                             if (written > 0)
+                            {
                                 conn->addCgiBytesWritten(written);
-							else if (written == -1)
-								continue; // Continue and pray the error state is caught by poll (POLLERR)
+                            }
+                            else if (written == -1)
+                            {
+                                // FATAL ERROR: Pipe is broken (CGI crashed).
+                                // Clean up IMMEDIATELY to prevent infinite loops.
+                                close(fd);
+                                cgi_write_map.erase(fd);
+                                fds_to_remove.push_back(fd);
+                                continue; // Skip to the next FD in the poll loop
+                            }
                         }
+                        
                         // 3. Close if done
                         if (conn->getCgiBytesWritten() >= bytesToSend)
                         {
@@ -778,7 +789,7 @@ int main(int argc, char **argv)
                             fds_to_remove.push_back(fd);
                         }
                     }
-                    // handle Errors
+                    // handle Errors (POLLERR | POLLHUP) without POLLOUT
                     else if (revents & (POLLERR | POLLHUP))
                     {
                         close(fd);
