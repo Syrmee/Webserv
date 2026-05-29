@@ -77,7 +77,7 @@ void Connection::clearIo()
  */
 int Connection::readFromSocket()
 {
-    if (inBuffer_.size() > MAX_HEADER_SIZE)
+    if (inBuffer_.size() > MAX_HEADER_SIZE && inBuffer_.find("\r\n\r\n") == std::string::npos) // Fix potential issue that could break legitimate upload.
         throw Request::ParseError(431);
 
     char buf[8192];

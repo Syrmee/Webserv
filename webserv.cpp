@@ -588,6 +588,7 @@ int main(int argc, char **argv)
     }
 
     signal(SIGINT, on_sigint);
+    signal(SIGPIPE, SIG_IGN); // Protects against broken pipes
 
     try {
         // configuration setup
@@ -686,6 +687,10 @@ int main(int argc, char **argv)
                         int client_fd = listener_map[fd]->acceptClient();
                         if (client_fd >= 0)
                         {
+                            // FORCE NON-BLOCKING
+                            int flags = fcntl(client_fd, F_GETFL, 0);
+                            fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
+
                             // Create new connection object (Allocate on HEAP)
                             Connection* new_conn = new Connection(client_fd);
                             connections[client_fd] = new_conn;
