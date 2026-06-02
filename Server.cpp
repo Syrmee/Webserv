@@ -102,11 +102,12 @@ bool Server::bindAndListen()
 
 int Server::acceptClient()
 {
-    struct sockaddr_in cli;
-    socklen_t len = sizeof(cli);
-
     // Since listen_fd_ is now O_NONBLOCK, this will:
     // Return FD if client is waiting.
     // Return -1 (with errno EAGAIN) if no one is waiting.
-    return ::accept(listen_fd_, (struct sockaddr*)&cli, &len);
+
+    int clientFd = ::accept(listen_fd_, NULL, 0);
+    int flags = fcntl(clientFd, F_GETFL, 0);
+    fcntl(clientFd, F_SETFL, flags | O_NONBLOCK);
+    return clientFd;
 }

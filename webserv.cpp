@@ -6,7 +6,7 @@
 #include "CgiHandler.hpp"
 
 #include <netinet/in.h>
-#include <sys/socket.h> 
+#include <sys/socket.h>
 #include <signal.h>
 #include <poll.h>
 #include <map>
@@ -16,9 +16,6 @@
 
 static volatile sig_atomic_t g_running = 1;
 static void on_sigint(int){ g_running = 0; }
-
-
-
 
 // Helper to add a file descriptor to the pollfd vector
 void addToPoll(std::vector<struct pollfd>& fds, int fd, short events) {
@@ -37,19 +34,21 @@ void addToPoll(std::vector<struct pollfd>& fds, int fd, short events) {
  * poll vector. This "deferred deletion" pattern prevents iterator invalidation
  * within the main event loop.
  */
-void closeClient(int fd, std::map<int, Connection*>& conns, 
+void closeClient(int fd, std::map<int, Connection*>& conns,
                  std::map<int, const ServerConfig*>& cfg_map,
-                 std::vector<int>& fds_to_remove) 
+                 std::vector<int>& fds_to_remove)
 {
-    close(fd);
-    
+
     // SAFETY: Check if it exists before deleting
     if (conns.find(fd) != conns.end())
     {
         delete conns[fd]; // Calls ~Connection()
         conns.erase(fd);
     }
-    
+    else {
+        close(fd);
+    }
+
     cfg_map.erase(fd);
     fds_to_remove.push_back(fd);
 }
@@ -70,10 +69,10 @@ const Location* findBestLocation(const ServerConfig* srvCfg, const std::string& 
     for (size_t i = 0; i < srvCfg->locations.size(); ++i)
     {
         const Location& loc = srvCfg->locations[i];
-        
+
         // Check if the URI starts with this location's path (Prefix Match)
         if (uri.compare(0, loc.uri.length(), loc.uri) == 0)
-        {    
+        {
             // We found a match. Is it better  than the previous one?
             if (loc.uri.length() > bestLength)
             {
@@ -102,15 +101,15 @@ const Location* findBestLocation(const ServerConfig* srvCfg, const std::string& 
 std::string processCgiResponse(const std::string& rawOutput, const Request& req) {
     std::string headers;
     std::string body;
-    
-    std::string statusLine = "HTTP/1.1 200 OK\r\n"; 
+
+    std::string statusLine = "HTTP/1.1 200 OK\r\n";
     int statusInt = 200; // <--- NEW: Default integer status
-    
+
     // 1. Separate Headers from Body
     size_t headerEnd = rawOutput.find("\r\n\r\n");
     if (headerEnd != std::string::npos) {
-        headers = rawOutput.substr(0, headerEnd + 2); 
-        body = rawOutput.substr(headerEnd + 4);       
+        headers = rawOutput.substr(0, headerEnd + 2);
+        body = rawOutput.substr(headerEnd + 4);
     } else {
         body = rawOutput;
     }
@@ -122,11 +121,11 @@ std::string processCgiResponse(const std::string& rawOutput, const Request& req)
         if (endOfLine != std::string::npos) {
             std::string statusCodeStr = headers.substr(statusPos + 7, endOfLine - (statusPos + 7));
             statusCodeStr = trim(statusCodeStr); // e.g., "404 Not Found"
-            
-            statusInt = std::atoi(statusCodeStr.c_str()); 
-            
+
+            statusInt = std::atoi(statusCodeStr.c_str());
+
             statusLine = "HTTP/1.1 " + statusCodeStr + "\r\n";
-            headers.erase(statusPos, endOfLine - statusPos + 2); 
+            headers.erase(statusPos, endOfLine - statusPos + 2);
         }
     }
 
@@ -134,21 +133,21 @@ std::string processCgiResponse(const std::string& rawOutput, const Request& req)
     std::ostringstream ss;
     ss << statusLine;
     ss << "Server: webserv/1.0\r\n";
-    
+
     if (shouldKeepAlive(req, statusInt))
         ss << "Connection: keep-alive\r\n";
     else
         ss << "Connection: close\r\n";
-    
+
     ss << "Content-Length: " << body.size() << "\r\n";
     ss << headers;
 
     if (headers.find("Content-Type:") == std::string::npos)
         ss << "Content-Type: text/html\r\n";
     if (!headers.empty() && headers.compare(headers.size() - 2, 2, "\r\n") == 0)
-        ss << "\r\n"; 
+        ss << "\r\n";
     else
-        ss << "\r\n\r\n"; 
+        ss << "\r\n\r\n";
 
     ss << body;
     return ss.str();
@@ -176,7 +175,8 @@ std::string processCgiResponse(const std::string& rawOutput, const Request& req)
 bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, short& poll_events,
                   std::vector<struct pollfd>& fds,
                   std::map<int, Connection*>& cgi_read_map,
-                  std::map<int, Connection*>& cgi_write_map)
+                  std::map<int, Connection*>& cgi_write_map
+)
 {
     // 1. Handle critical socket errors immediately
     if (revents & (POLLERR | POLLNVAL))
@@ -190,11 +190,11 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
     if (revents & (POLLIN | POLLHUP))
     {
         try {
-            // Read available data. We don't return on 0 here because 
+            // Read available data. We don't return on 0 here because
             // we must process any data already in the buffer first.
             int bytesRead = conn->readFromSocket();
             // If client closed (EOF) and we have no data to process and nothing to send, close.
-            if (bytesRead == 0 && conn->in().empty() && conn->out().empty())
+            if (bytesRead <= 0 && conn->in().empty() && conn->out().empty())
                 return false;
         } catch (const std::exception& e) {
             return false;
@@ -203,9 +203,9 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
 
     // 2.5. PROCESS (Loop to handle Pipelined requests)
     size_t headerEnd;
-    while (conn->out().empty() && (headerEnd = conn->in().find("\r\n\r\n")) != std::string::npos)
+    while (!conn->isTimedout() && conn->out().empty() && (headerEnd = conn->in().find("\r\n\r\n")) != std::string::npos)
     {
-        try 
+        try
         {
             // Check for end of headers
             size_t headerEnd = conn->in().find("\r\n\r\n");
@@ -215,7 +215,7 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
                 conn->request().reset();
                 conn->request().parseHeader(conn->in().c_str());
 
-                // B. Check Config Limits 
+                // B. Check Config Limits
                 size_t effective_max_body_size = srvCfg->client_max_body_size;
                 const Location* loc = findBestLocation(srvCfg, conn->request().getPath());
                 if (loc && loc->client_max_body_size != 0)
@@ -242,7 +242,7 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
                     std::string head = conn->in().substr(0, headerSize);
                     conn->in() = head + rawBody;
                     if (!isDone)
-                        break; 
+                        break;
                     // 4. finnal body
                     finalBody = conn->request().getUnchunkedBody();
                     bytesToConsume = headerSize;
@@ -253,14 +253,14 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
                     size_t totalRequestSize = headerSize + contentLength;
                     if (conn->in().size() < totalRequestSize)
                         break;
-                    
+
                     finalBody = conn->in().substr(headerSize, contentLength);
                     conn->request().setUnchunkedBody(finalBody);
                 }
                 // =============================================================
                 // D. ROUTING LOGIC
                 // =============================================================
-                
+
                 // 1. Find Best Location
                 if (!loc)
                     throw HttpError(404);
@@ -297,7 +297,7 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
                 // 3. Handle Redirection
                 if (!loc->return_url.empty())
                     throw HttpError(loc->return_code, loc->return_url);
-                
+
                 // =============================================================
                 // 4. PATH RESOLUTION & CGI HANDLING
                 // =============================================================
@@ -314,7 +314,7 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
                     {
                         scriptName = requestPath.substr(0, split_pos);
                         if (scriptName.empty() && requestPath[0] == '/') scriptName = "/"; // Handle root case
-                        
+
                         try { fsPath = resolveFullPath(*loc, scriptName); }
                         catch (const HttpError&) { fsPath.clear(); }
 
@@ -351,8 +351,8 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
 
 
                         conn->in().erase(0, bytesToConsume);
-                        
-                        return true; 
+
+                        return true;
                     }
                 }
 
@@ -363,7 +363,7 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
                 if (conn->request().getMethod() == "GET" || conn->request().getMethod() == "HEAD")
                 {
                     // 5. Handle Directory
-                    if (isDir(fsPath)) 
+                    if (isDir(fsPath))
                     {
                         // 1. Redirect if trailing slash is missing (e.g. "/images" -> "/images/")
                         // This is required so relative links in HTML work correctly.
@@ -371,7 +371,7 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
                         if (path.empty() || path[path.length() - 1] != '/')
                         {
                             std::string newLoc = conn->request().getPath() + "/";
-                            if (!conn->request().getQuery().empty()) 
+                            if (!conn->request().getQuery().empty())
                                 newLoc += "?" + conn->request().getQuery();
                             throw HttpError(301, newLoc);
                         }
@@ -382,8 +382,8 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
                             std::string indexPath = fsPath + (fsPath[fsPath.length() - 1] == '/' ? "" : "/") + loc->index;
                             if (isFile(indexPath))
                             {
-                                fsPath = indexPath; 
-                                goto serve_file; 
+                                fsPath = indexPath;
+                                goto serve_file;
                             }
                         }
 
@@ -394,7 +394,7 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
                             conn->in().erase(0, bytesToConsume);
 
                             poll_events = POLLIN | POLLOUT;
-                            return true; 
+                            return true;
                         }
 
                         // 4. If neither worked -> Forbidden
@@ -429,7 +429,7 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
                                 <<  "Date: " << httpDateNow() << "\r\n"
                                 <<  "Connection: " << (keepAlive ? "keep-alive" : "close") << "\r\n"
                                 <<  "\r\n";
-                    conn->out() = response.str();  
+                    conn->out() = response.str();
                 }
                 else if (conn->request().getMethod() == "POST")
                 {
@@ -447,7 +447,7 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
 
                     if (filename.empty())
                         throw HttpError(400); // cannot upload to a directory root
-                    
+
                     // 3. construct full path
                     std::string outPath = loc->upload_store;
                     // ensure traling slash on directory
@@ -539,6 +539,7 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
         else if (conn->out().find(" 301 ") != std::string::npos) currentStatus = 301;
         else if (conn->out().find(" 201 ") != std::string::npos) currentStatus = 201;
         else if (conn->out().find(" 204 ") != std::string::npos) currentStatus = 204;
+        else if (conn->out().find(" 504 ") != std::string::npos) currentStatus = 504;
 
         bool keep = shouldKeepAlive(conn->request(), currentStatus);
 
@@ -548,12 +549,12 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
 
         if (conn->out().empty())
         {
-            if (!keep)
+            if (!keep || conn->isTimedout())
                 return false;
         }
     }
 
-    // Final check: if the socket is half-closed (read 0 previously) 
+    // Final check: if the socket is half-closed (read 0 previously)
     // and we've finished sending everything, close now.
     if ((revents & POLLHUP) && conn->out().empty())
         return false;
@@ -563,8 +564,50 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
         poll_events = POLLIN | POLLOUT;
     else
         poll_events = POLLIN;
-
     return true;
+}
+
+#include <ctime>
+
+void applyTimeOuts(
+    Connection* conn,
+    const ServerConfig* srvConf,
+    pollfd & poll_fd,
+    std::map<int, Connection*>& cgi_read_map,
+    std::map<int,Connection*>& cgi_write_map,
+    std::vector<int>& fds_to_remove
+)
+{
+    if (conn->isTimedout()
+        || std::time(NULL) - conn->getEstablishementTimestamp() < TIMEOUT_SECONDS // Check if the threshold isnt reached
+    )
+    {
+        return;
+    }
+
+    conn->timeout();
+
+    // Only send 504 in CGI context otherwise just silently close the connection
+    // kill the cgi process and its pipes
+    if (conn->getCgiHandler())
+    {
+        std::cerr << "CGI Request Error: Timed out on fd " << conn->fd() << std::endl;
+        cgi_read_map.erase(conn->getCgiHandler()->getReadFd());
+        cgi_write_map.erase(conn->getCgiHandler()->getWriteFd());
+        fds_to_remove.push_back(conn->getCgiHandler()->getReadFd());
+        fds_to_remove.push_back(conn->getCgiHandler()->getWriteFd());
+        delete conn->getCgiHandler();
+        conn->setCgiHandler(NULL);
+
+        poll_fd.events = POLLOUT; // Only writing since the connections is in the way of being closed
+        conn->out() = buildError(504, conn->request(), srvConf);
+        conn->in().clear();
+    }
+    else {
+        poll_fd.events = 0; // Only writing since the connections is in the way of being closed
+        conn->out().clear();
+        conn->in().clear();
+    }
 }
 
 /**
@@ -609,13 +652,13 @@ int main(int argc, char **argv)
         for (size_t i = 0; i < config.servers.size(); ++i)
         {
             Server* srv = new Server(config.servers[i]);
-            
+
             if (!srv->bindAndListen())
             {
-                std::cerr << "Error: Failed to bind port " << config.servers[i].port 
+                std::cerr << "Error: Failed to bind port " << config.servers[i].port
                           << ". Skipping." << std::endl;
                 delete srv;
-                continue; 
+                continue;
             }
             servers.push_back(srv);
         }
@@ -631,8 +674,8 @@ int main(int argc, char **argv)
         {
             addToPoll(poll_fds, servers[i]->getFd(), POLLIN);
             listener_map[servers[i]->getFd()] = servers[i];
-            
-            std::cout << "Server listening on " << servers[i]->getConfig().host 
+
+            std::cout << "Server listening on " << servers[i]->getConfig().host
                       << ":" << servers[i]->getConfig().port << std::endl;
         }
 
@@ -656,7 +699,7 @@ int main(int argc, char **argv)
 
             // A. Wait for events (1000ms timeout)
             int ret = poll(&poll_fds[0], poll_fds.size(), 1000);
-            
+
             if (ret < 0)
             {
                 if (errno == EINTR)
@@ -664,11 +707,41 @@ int main(int argc, char **argv)
                 perror("poll");
                 break; // Real error, exit
             }
+
+
+            for (size_t i = 0; i < poll_fds.size(); ++i)
+            {
+                int fd = poll_fds[i].fd;
+                if (connections.count(fd))
+                {
+                    Connection* connection = connections[fd];
+
+                    if (!connection->isTimedout())
+                    {
+                        applyTimeOuts(
+                            connection,
+                            client_to_config[fd],
+                            poll_fds[i],
+                            cgi_read_map,
+                            cgi_write_map,
+                            fds_to_remove
+                        );
+                        continue;
+                    }
+
+                    if (connection->out().empty())
+                    {
+                        std::cout << "Silenty closed connection on fd " << fd << std::endl;
+                        closeClient(fd, connections, client_to_config, fds_to_remove);
+                    }
+                }
+            }
+
             if (ret == 0)
                 continue; // Timeout, loop back
 
             // B. Iterate through events
-            
+
             for (size_t i = 0; i < poll_fds.size(); ++i)
             {
                 int fd = poll_fds[i].fd;
@@ -687,25 +760,20 @@ int main(int argc, char **argv)
                         int client_fd = listener_map[fd]->acceptClient();
                         if (client_fd >= 0)
                         {
-                            // FORCE NON-BLOCKING
-                            int flags = fcntl(client_fd, F_GETFL, 0);
-                            fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
-
                             // Create new connection object (Allocate on HEAP)
                             Connection* new_conn = new Connection(client_fd);
                             connections[client_fd] = new_conn;
-                            
+
                             // Map the client to the server config that accepted it
                             client_to_config[client_fd] = &listener_map[fd]->getConfig();
 
                             // Only listen for POLLIN initially!
                             addToPoll(poll_fds, client_fd, POLLIN);
-                            
+
                             std::cout << "New Client Connected: " << client_fd << std::endl;
                         }
                     }
                 }
-
                 // ---------------------------------------------------------
                 // CASE 2: CGI SCRIPT HAS OUTPUT TO READ
                 // ---------------------------------------------------------
@@ -714,7 +782,7 @@ int main(int argc, char **argv)
                     Connection *conn = cgi_read_map[fd];
                     if ((revents & POLLIN) || (revents & POLLHUP))
                     {
-                        char buffer[4096];
+                        char buffer[4096] = {0};
                         ssize_t bytes = read(fd, buffer, sizeof(buffer) - 1);
 
                         if (bytes > 0){
@@ -728,7 +796,7 @@ int main(int argc, char **argv)
                             delete conn->getCgiHandler();
                             conn->setCgiHandler(NULL);
                             // 4. close pipe
-                            close(fd);
+                            //close(fd); // TODO seems use because the CGI fd is closed in the destructor
                             cgi_read_map.erase(fd);
                             fds_to_remove.push_back(fd);
                             // 5. switch client back to write mode
@@ -770,7 +838,7 @@ int main(int argc, char **argv)
                         if (remaining > 0)
                         {
                             ssize_t written = write(fd, body.c_str() + bytesAlreadySent, remaining);
-                            
+
                             if (written > 0)
                             {
                                 conn->addCgiBytesWritten(written);
@@ -785,7 +853,7 @@ int main(int argc, char **argv)
                                 continue; // Skip to the next FD in the poll loop
                             }
                         }
-                        
+
                         // 3. Close if done
                         if (conn->getCgiBytesWritten() >= bytesToSend)
                         {
@@ -802,12 +870,12 @@ int main(int argc, char **argv)
                         fds_to_remove.push_back(fd);
                     }
                 }
-
                 // ---------------------------------------------------------
                 // CASE 4: EXISTING CLIENT
                 // ---------------------------------------------------------
                 else
                 {
+
                     // If FD is not in connections map, it's a ghost. Safety check.
                     if (connections.find(fd) == connections.end())
                     {
@@ -818,9 +886,9 @@ int main(int argc, char **argv)
                     // Delegate all logic to the handler
                     // We pass the poll_events by reference so the handler can toggle POLLOUT
                     bool keepAlive = handleClient(
-                        connections[fd], 
-                        client_to_config[fd], 
-                        revents, 
+                        connections[fd],
+                        client_to_config[fd],
+                        revents,
                         poll_fds[i].events,
                         poll_fds,
                         cgi_read_map,
@@ -843,7 +911,7 @@ int main(int argc, char **argv)
                 }
             }
         }
-        
+
         // CLEANUP AT EXIT
         for (std::map<int, Connection*>::iterator it = connections.begin(); it != connections.end(); ++it)
         {

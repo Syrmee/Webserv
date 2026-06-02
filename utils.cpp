@@ -44,7 +44,7 @@ bool isDir(const std::string& path)
 }
 
 bool isFile(const std::string& path) {
-    struct stat st;
+    struct stat st = {};
     if (stat(path.c_str(), &st) != 0)
         return false;
     return S_ISREG(st.st_mode);
@@ -100,7 +100,7 @@ std::string resolveFullPath(const Location& loc, const std::string& path)
 // === HTTP date helper ===
 std::string httpDateNow()
 {
-    char buf[64];
+    char buf[64] = {0};
     std::time_t t = std::time(0);
     struct tm gm;
     gmtime_r(&t, &gm);
@@ -123,6 +123,7 @@ static const char* errorReason(int code)
         // 5xx http code -> Server side error
         case 500: return "Internal Server Error";
         case 501: return "Not Implemented";
+        case 504: return "Timed out";
         case 505: return "HTTP Version Not Supported";
         default:  return "Error";
     }
@@ -281,7 +282,7 @@ std::string buildDirectoryListing(const Request& req, const std::string& fsPath)
     std::string html = "<html><head><title>Index of " + reqPath + "</title></head><body>";
     html += "<h1>Index of " + reqPath + "</h1><hr><pre>";
 
-    struct dirent* entry;
+    struct dirent* entry = NULL;
     while ((entry = readdir(dir)) != NULL) {
         std::string name = entry->d_name;
         if (name == ".")

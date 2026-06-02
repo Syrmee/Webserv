@@ -3,10 +3,12 @@
 #include <sys/socket.h>  // for recv(), send()
 #include <iostream>
 #include <cerrno>
+#include <ctime>
 
 Connection::Connection(int fd)
     : fd_(fd), outBufferOffset_(0), closed_(false),
-    cgiHandler_(NULL), cgiBytesWritten_(0)
+    cgiHandler_(NULL), cgiBytesWritten_(0),
+    establishementTimestamp_(std::time(NULL)), timedout_(false)
 {}
 
 Connection::~Connection()
@@ -92,7 +94,7 @@ int Connection::readFromSocket()
         return 0;
 
     perror("recv()");
-    closeNow();
+    //closeNow(); // Let webserv.cpp handle the closing
     return -1;
 }
 
@@ -136,6 +138,6 @@ int Connection::writeToSocket()
     }
 
     perror("send()");
-    closeNow();
+    //closeNow(); // Let webserv.cpp handle the closing
     return -1;
 }
