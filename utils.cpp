@@ -36,7 +36,7 @@ std::string trim(const std::string& str)
 // === filesystem helpers ===
 bool isDir(const std::string& path)
 {
-    struct stat st;
+    struct stat st = {};
     if (stat(path.c_str(), &st) != 0)
         return (false);
     return (S_ISDIR(st.st_mode));
@@ -44,7 +44,7 @@ bool isDir(const std::string& path)
 }
 
 bool isFile(const std::string& path) {
-    struct stat st;
+    struct stat st = {};
     if (stat(path.c_str(), &st) != 0)
         return false;
     return S_ISREG(st.st_mode);
@@ -123,6 +123,8 @@ static const char* errorReason(int code)
         // 5xx http code -> Server side error
         case 500: return "Internal Server Error";
         case 501: return "Not Implemented";
+        case 502: return "Bad Gateway";
+        case 504: return "Gateway Timeout";
         case 505: return "HTTP Version Not Supported";
         default:  return "Error";
     }
@@ -144,7 +146,7 @@ bool shouldKeepAlive(const Request& request, int status)
     std::string connection = toLower(request.getValFromMap("connection"));
 
     if (status == 400 || status == 408 || status == 413 ||
-        status == 414 || status == 431 || status >= 500 || status >= 501)
+        status == 414 || status == 431 || status >= 500)
         return false;
 
     if (version == "HTTP/1.1")
@@ -233,8 +235,9 @@ std::string buildError(int code, const Request& request, const ServerConfig* cfg
     result << "Content-Type: text/html; charset=UTF-8\r\n"
         << "Content-Length: " << body.size() << "\r\n"
         << "Connection: " << (keepAlive ? "keep-alive" : "close") << "\r\n"
-        << "\r\n"
-        << body;
+        << "\r\n";
+    if (request.getMethod() != "HEAD")
+        result << body;
     
     return result.str();
 }
@@ -259,8 +262,9 @@ std::string buildRedirect(const Request& request, int status, const std::string&
         << "Content-Type: text/html; charset=UTF-8\r\n"
         << "Content-Length: " << body.size() << "\r\n"
         << "Connection: " << (keepAlive ? "keep-alive" : "close") << "\r\n"
-        << "\r\n"
-        << body;
+        << "\r\n";
+    if (request.getMethod() != "HEAD")
+        out << body;
     return out.str();
 }
 
@@ -309,7 +313,8 @@ std::string buildDirectoryListing(const Request& req, const std::string& fsPath)
     response << "\r\n"; // End of headers
     
     // 3. Combine
-    response << html;
+    if (req.getMethod() != "HEAD")
+        response << html;
 
     return response.str();
 }

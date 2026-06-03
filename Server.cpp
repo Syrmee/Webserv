@@ -102,7 +102,7 @@ bool Server::bindAndListen()
 
 int Server::acceptClient()
 {
-    struct sockaddr_in cli;
+    struct sockaddr_in cli = {};
     socklen_t len = sizeof(cli);
 
     // Since listen_fd_ is now O_NONBLOCK, this will:

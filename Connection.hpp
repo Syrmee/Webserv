@@ -2,6 +2,7 @@
 
 #include <string>
 #include <unistd.h>
+#include <ctime>
 #include "Request.hpp"
 
 #define MAX_HEADER_SIZE 32768 // 32KB
@@ -21,11 +22,18 @@ private:
     CgiHandler* cgiHandler_;     // Pointer to the active CGI handler (NULL if no CGI)
     std::string cgiOutput_;      // Buffer to hold data read from CGI stdout
     size_t cgiBytesWritten_;     // How much of the body we've written to CGI stdin
+    time_t      cgiStartTime_;
+    time_t      lastActivity_;
 
 public:
     explicit Connection(int fd);
     ~Connection();
     void    clearIo();
+
+    time_t       getCgiStartTime() const { return cgiStartTime_; }
+    void         setCgiStartTime(time_t t) { cgiStartTime_ = t; }
+    time_t       getLastActivity() const { return lastActivity_; }
+    void         touchActivity() { lastActivity_ = time(NULL); }
 
     // Getters
     int  fd() const;

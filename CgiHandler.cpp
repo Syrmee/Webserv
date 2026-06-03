@@ -54,6 +54,12 @@ void CgiHandler::initEnv(const Request& req)
     envMap_["SERVER_SOFTWARE"]   = "webserv/0.1";
     envMap_["QUERY_STRING"]      = req.getQuery();
     
+    // ADD THESE CRITICAL MISSING RFC 3875 VARIABLES HERE
+    envMap_["REQUEST_METHOD"]    = req.getMethod();  // <--- FIXES METHOD=GET TEST FAILURE
+    envMap_["SERVER_NAME"]       = "127.0.0.1";
+    envMap_["SERVER_PORT"]       = "8080";
+    envMap_["REMOTE_ADDR"]       = "127.0.0.1";
+    
     // PHP-CGI specifically requires SCRIPT_FILENAME to locate the file on disk
     envMap_["SCRIPT_FILENAME"]   = scriptPath_; 
     

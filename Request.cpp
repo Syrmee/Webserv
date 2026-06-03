@@ -84,7 +84,7 @@ static bool isValidToken(const std::string& m)
  */
 int    Request::parseMethod()
 {
-    std::cout << method_ << std::endl;
+    // std::cout << method_ << std::endl;
     if (!isValidToken(method_))
         return (400);
 
@@ -179,7 +179,7 @@ int  Request::parsePath()
 {
     if (path_.empty())
     {
-        std::cout << "path empty (before parse)" << std::endl;
+        // std::cout << "path empty (before parse)" << std::endl;
         return (400);
     }
 
@@ -204,7 +204,7 @@ int  Request::parsePath()
     {
         if (static_cast<unsigned char>(path_[i]) < 0x20 || static_cast<unsigned char>(path_[i]) == 0x7f)
         {
-            std::cout << "path rejected for non-printable chars" << std::endl;
+            // std::cout << "path rejected for non-printable chars" << std::endl;
             return (400); // non printable chars are rejected for high security :) 0x20 = 32 = SPACE; 0x7f = DEL
         }
         if (static_cast<unsigned char>(path_[i]) >= 0x80) // rejection non-ASCII bytes 
@@ -213,7 +213,7 @@ int  Request::parsePath()
     }
     
     if (path_.empty() || path_[0] != '/'){
-        std::cout << "path empty (after parse) or isn't starting with '/' " << std::endl;
+        // std::cout << "path empty (after parse) or isn't starting with '/' " << std::endl;
         return 400;
     }
 
@@ -299,7 +299,7 @@ void    Request::parseHeader(const char *buffer)
     }
 
     code = parseMethod();
-    std::cout << "::::" << code << "::::" << std::endl;
+    // std::cout << "::::" << code << "::::" << std::endl;
     if (code != 0)
         throw ParseError(code);
 
@@ -307,7 +307,7 @@ void    Request::parseHeader(const char *buffer)
     if (code != 0)
         throw ParseError(code);
     
-    std::cout << path_ << " : " << query_ << std::endl; // for testing !
+    // std::cout << path_ << " : " << query_ << std::endl; // for testing !
 
     // load map with "key" : "value" ; example "host" : "local" , "connection" : "close";
     while (std::getline(req, line))
