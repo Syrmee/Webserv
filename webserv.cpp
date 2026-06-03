@@ -123,37 +123,60 @@ const Location* findBestLocation(const ServerConfig* srvCfg, const std::string& 
  * A string containing the full, valid HTTP response.
  */
 std::string processCgiResponse(const std::string& rawOutput, const Request& req) {
-    std::string headers;
+    std::string rawHeaders;
     std::string body;
 
-    std::string statusLine = "HTTP/1.1 200 OK\r\n"; 
-    int statusInt = 200; // Default integer status
-        
-    // 1. Separate Headers from Body
+    // 1. Robustly Separate Headers from Body (Handles both \r\n\r\n and \n\n)
     size_t headerEnd = rawOutput.find("\r\n\r\n");
     if (headerEnd != std::string::npos) {
-        headers = rawOutput.substr(0, headerEnd + 2); 
-        body = rawOutput.substr(headerEnd + 4);       
+        rawHeaders = rawOutput.substr(0, headerEnd);
+        body = rawOutput.substr(headerEnd + 4);
     } else {
-        body = rawOutput;
-    }
-
-    // 2. Check for the "Status:" Header
-    size_t statusPos = headers.find("Status:");
-    if (statusPos != std::string::npos) {
-        size_t endOfLine = headers.find("\r\n", statusPos);
-        if (endOfLine != std::string::npos) {
-            std::string statusCodeStr = headers.substr(statusPos + 7, endOfLine - (statusPos + 7));
-            statusCodeStr = trim(statusCodeStr); // e.g., "404 Not Found"
-            
-            statusInt = std::atoi(statusCodeStr.c_str()); 
-            
-            statusLine = "HTTP/1.1 " + statusCodeStr + "\r\n";
-            headers.erase(statusPos, endOfLine - statusPos + 2); 
+        headerEnd = rawOutput.find("\n\n");
+        if (headerEnd != std::string::npos) {
+            rawHeaders = rawOutput.substr(0, headerEnd);
+            body = rawOutput.substr(headerEnd + 2);
+        } else {
+            // No headers found at all; treat everything as body
+            body = rawOutput;
         }
     }
 
-    // 3. Build the Final Response
+    // 2. Parse CGI Headers Line by Line
+    std::vector<std::string> cleanHeaders;
+    std::string statusLine = "HTTP/1.1 200 OK\r\n";
+    int statusInt = 200;
+    bool hasContentType = false;
+
+    std::istringstream stream(rawHeaders);
+    std::string line;
+    while (std::getline(stream, line)) {
+        // Strip trailing \r if present
+        if (!line.empty() && line[line.size() - 1] == '\r') {
+            line.erase(line.size() - 1);
+        }
+        if (line.empty()) continue;
+
+        // Check for Status header
+        if (line.find("Status:") == 0) {
+            std::string statusCodeStr = line.substr(7);
+            statusCodeStr = trim(statusCodeStr); // Assuming your trim helper exists
+            statusInt = std::atoi(statusCodeStr.c_str());
+            statusLine = "HTTP/1.1 " + statusCodeStr + "\r\n";
+        } 
+        // Filter out any accidental duplicate HTTP status lines the CGI might have bled out
+        else if (line.find("HTTP/1.1") == 0) {
+            continue; 
+        }
+        else {
+            if (line.find("Content-Type:") == 0) {
+                hasContentType = true;
+            }
+            cleanHeaders.push_back(line + "\r\n");
+        }
+    }
+
+    // 3. Build the Final Clean HTTP Response
     std::ostringstream ss;
     ss << statusLine;
     ss << "Server: webserv/1.0\r\n";
@@ -164,16 +187,20 @@ std::string processCgiResponse(const std::string& rawOutput, const Request& req)
         ss << "Connection: close\r\n";
     
     ss << "Content-Length: " << body.size() << "\r\n";
-    ss << headers;
 
-    if (headers.find("Content-Type:") == std::string::npos)
+    // Add valid forwarded CGI headers
+    for (size_t i = 0; i < cleanHeaders.size(); ++i) {
+        ss << cleanHeaders[i];
+    }
+
+    if (!hasContentType) {
         ss << "Content-Type: text/html\r\n";
-    if (!headers.empty() && headers.compare(headers.size() - 2, 2, "\r\n") == 0)
-        ss << "\r\n"; 
-    else
-        ss << "\r\n\r\n";
+    }
 
+    // Explicitly end HTTP headers section
+    ss << "\r\n";
     ss << body;
+
     return ss.str();
 }
 
