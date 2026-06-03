@@ -43,8 +43,8 @@ echo "Instanciation de la structure YoupiBanane..."
 echo "Contenu requis pour youpi.bad_extension" > "$TARGET_DIR/YoupiBanane/youpi.bad_extension"
 echo "Fichier de test pour le CGI .bla" > "$TARGET_DIR/YoupiBanane/youpi.bla"
 echo "Un fichier dans nop" > "$TARGET_DIR/YoupiBanane/nop/youpi.bad_extension"
-echo "Un autre fichier dans nop" > "$TARGET_DIR/YoupiBanane/nop/other.pouet"
-echo "Fichier non vide pour tester les requetes de taille" > "$TARGET_DIR/YoupiBanane/Yeah/not_empty.bla"
+echo "Un autre fichier dans nop" > "$TARGET_DIR/YoupiBanane/nop/other.pouic"
+echo "Fichier non vide pour tester les requetes de taille" > "$TARGET_DIR/YoupiBanane/Yeah/not_happy.bad_extension"
 
 # 4. Création du script CGI Python (pour l'évaluation humaine)
 echo "Création d'un script CGI Python de test..."
