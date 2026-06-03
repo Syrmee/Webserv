@@ -472,7 +472,7 @@ void    Request::reset()
     query_.clear();
     version_.clear();
     header_.clear();
-    unchunkedBody_.clear();
+    //unchunkedBody_.clear();
 
     isChunked_ = false;
     chunkedCompleted_ = false;

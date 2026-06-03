@@ -466,6 +466,8 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
                     outFile.write(finalBody.c_str(), finalBody.size());
                     outFile.close();
 
+					conn->request().getUnchunkedBody().clear();
+
                     if (outFile.fail())
                         throw HttpError(500);
 
@@ -853,6 +855,8 @@ int main(int argc, char **argv)
                                 continue; // Skip to the next FD in the poll loop
                             }
                         }
+						else
+							conn->request().getUnchunkedBody().clear();
 
                         // 3. Close if done
                         if (conn->getCgiBytesWritten() >= bytesToSend)
