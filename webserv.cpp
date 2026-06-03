@@ -482,7 +482,7 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
                     }
 
                     // 4. If neither worked -> Forbidden
-                    throw HttpError(403);
+                    throw HttpError(404);
                 }
                 else if (!isFile(fsPath))
                 {
