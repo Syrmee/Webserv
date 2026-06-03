@@ -288,6 +288,13 @@ bool handleClient(Connection* conn, const ServerConfig* srvCfg, short revents, s
                 std::string decoded;
                 bool isDone = conn->request().parseChunkedBody(rawBody, decoded);
                 conn->request().getUnchunkedBody() += decoded;
+
+                // Vérification de la taille à la volée
+                if (conn->request().getUnchunkedBody().size() > effective_max_body_size)
+                {
+                    throw Request::ParseError(413); // Payload Too Large !
+                }
+
                 // 3. left overs (the next pipelined request) goes back to socket buffer
                 std::string head = conn->in().substr(0, headerSize);
                 conn->in() = head + rawBody;
