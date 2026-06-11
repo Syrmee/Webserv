@@ -10,7 +10,7 @@ RESET = '\033[0m'
 
 def setup_environment():
     print("[*] Setting up dummy filesystem for tests...")
-    base = "/home/londardi/webserv_testing/ultimate"
+    base = "/tmp/www/ultimate"
     dirs = [
         f"{base}/www",
         f"{base}/www/upload",
