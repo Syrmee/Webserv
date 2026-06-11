@@ -1021,7 +1021,8 @@ int main(int argc, char **argv)
         {
             delete servers[i];
         }
-
+		
+		std::cout << "\nServer shutting down..." << std::endl;
     }
     catch (const std::exception &e)
     {
@@ -1029,6 +1030,5 @@ int main(int argc, char **argv)
         //return 1;
     }
 
-    std::cout << "\nServer shutting down..." << std::endl;
     return 0;
 }
