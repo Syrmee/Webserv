@@ -2,7 +2,6 @@
 #include "CgiHandler.hpp"
 #include <sys/socket.h>  // for recv(), send()
 #include <iostream>
-#include <cerrno>
 
 Connection::Connection(int fd)
     : fd_(fd), outBufferOffset_(0), closed_(false),
@@ -65,6 +64,7 @@ void Connection::clearIo()
     inBuffer_.clear();
     outBuffer_.clear();
     outBufferOffset_ = 0;
+    request_.reset();
 }
 
 int Connection::readFromSocket()
@@ -72,7 +72,7 @@ int Connection::readFromSocket()
     if (inBuffer_.size() > MAX_HEADER_SIZE && inBuffer_.find("\r\n\r\n") == std::string::npos)
         throw Request::ParseError(431);
 
-    char buf[8192];
+    char buf[65536]; // Increased buffer size to 64KB for high-throughput uploads
     ssize_t n = ::recv(fd_, buf, sizeof(buf), 0);
 
     if (n > 0)
@@ -83,7 +83,8 @@ int Connection::readFromSocket()
     else if (n == 0)
         return 0;
 
-    return -1; // Gracefully signal read faults without touching errno/perror
+    // Return -2 to indicate EAGAIN/EWOULDBLOCK
+    return -2;
 }
 
 int Connection::writeToSocket()
@@ -93,6 +94,7 @@ int Connection::writeToSocket()
         std::string().swap(outBuffer_);
         outBufferOffset_ = 0;
         std::string().swap(cgiOutput_);
+        request_.reset();
         return 0;
     }
     
@@ -110,9 +112,11 @@ int Connection::writeToSocket()
             std::string().swap(outBuffer_);
             outBufferOffset_ = 0;
             std::string().swap(cgiOutput_);
+            request_.reset();
         }
         return static_cast<int>(n);
     }
 
-    return -1;
+    // Return -2 on EAGAIN/EWOULDBLOCK
+    return -2;
 }

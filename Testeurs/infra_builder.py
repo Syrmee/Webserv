@@ -6,6 +6,8 @@ BLUE='\033[0;34m'
 NC='\033[0m' # Pas de couleur
 
 TARGET_DIR="/tmp/www"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CGI_TESTER_SRC="$SCRIPT_DIR/cgi_tester"
 
 echo -e "${BLUE}=== Création et configuration de $TARGET_DIR ===${NC}"
 
@@ -59,27 +61,15 @@ print("<h1>[CGI Python] Match reussi !</h1>")
 EOF
 chmod +x "$TARGET_DIR/cgi-bin/test.py"
 
-# 5. Création et compilation du binaire cgi_test (pour le testeur automatique)
-# Le vrai testeur de 42 attend un exécutable spécifique appelé cgi_test.
-# On en compile un basique ici au cas où vous n'avez pas l'officiel sous la main.
-echo "Génération et compilation de cgi_test..."
-cat << 'EOF' > "$TARGET_DIR/fake_cgi.c"
-#include <stdio.h>
-#include <unistd.h>
-#include <stdlib.h>
-
-int main(void) {
-    // Un CGI lit le body de la requête depuis stdin et répond sur stdout
-    printf("HTTP/1.1 200 OK\r\n");
-    printf("Content-Type: text/plain\r\n\r\n");
-    printf("CGI_TEST: Execute avec succes via le binaire compiled !\n");
-    return (0);
-}
-EOF
-
-gcc "$TARGET_DIR/fake_cgi.c" -o "$TARGET_DIR/cgi_test"
+# 5. Installation du binaire CGI fourni par l'école.
+# Le testeur attend un executable nommé cgi_test dans /tmp/www.
+echo "Installation du cgi_test officiel..."
+if [ ! -f "$CGI_TESTER_SRC" ]; then
+    echo "Erreur: cgi_tester introuvable: $CGI_TESTER_SRC" >&2
+    exit 1
+fi
+cp "$CGI_TESTER_SRC" "$TARGET_DIR/cgi_test"
 chmod +x "$TARGET_DIR/cgi_test"
-rm "$TARGET_DIR/fake_cgi.c"
 
 echo -e "${GREEN}=== Arborescence créée avec succès dans $TARGET_DIR ===${NC}"
 echo "Voici la structure générée :"

@@ -30,6 +30,7 @@ private:
     void initEnv(const Request& req);
     char** mapToEnvp();
     void freeEnvp();
+    void closeFd(int& fd);
 
 public:
     CgiHandler(const Request& req, const Location& loc, const std::string& scriptPath, const std::string& scriptName, const std::string& pathInfo, std::string interpreter);
@@ -43,4 +44,6 @@ public:
     int getWriteFd() const { return pipeIn_[1]; }
     pid_t getPid() const { return cgiPid_; }
     void    clearPid() { cgiPid_ = -1; }
+    void closeReadFd();
+    void closeWriteFd();
 };

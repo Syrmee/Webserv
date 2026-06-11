@@ -52,7 +52,14 @@ public:
 
     // CGI
     CgiHandler*     getCgiHandler() { return cgiHandler_; }
-    void            setCgiHandler(CgiHandler* cgi) { cgiHandler_ = cgi; }
+    void            setCgiHandler(CgiHandler* cgi) {
+        cgiHandler_ = cgi;
+        if (cgiHandler_)
+        {
+            cgiOutput_.clear();
+            cgiBytesWritten_ = 0;
+        }
+    }
     std::string&    getCgiOutput() { return cgiOutput_; }
     size_t          getCgiBytesWritten() const { return cgiBytesWritten_; }
     void            addCgiBytesWritten(size_t bytes) { cgiBytesWritten_ += bytes; }

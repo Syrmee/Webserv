@@ -32,10 +32,29 @@ CgiHandler::~CgiHandler()
         waitpid(cgiPid_, NULL, 0);
     }
 
-    if (pipeIn_[0] != -1) close(pipeIn_[0]);
-    if (pipeIn_[1] != -1) close(pipeIn_[1]);
-    if (pipeOut_[0]!= -1) close(pipeOut_[0]);
-    if (pipeOut_[1]!= -1) close(pipeOut_[1]);
+    closeFd(pipeIn_[0]);
+    closeFd(pipeIn_[1]);
+    closeFd(pipeOut_[0]);
+    closeFd(pipeOut_[1]);
+}
+
+void CgiHandler::closeFd(int& fd)
+{
+    if (fd != -1)
+    {
+        close(fd);
+        fd = -1;
+    }
+}
+
+void CgiHandler::closeReadFd()
+{
+    closeFd(pipeOut_[0]);
+}
+
+void CgiHandler::closeWriteFd()
+{
+    closeFd(pipeIn_[1]);
 }
 
 /**
@@ -53,22 +72,20 @@ void CgiHandler::initEnv(const Request& req)
     envMap_["SERVER_PROTOCOL"]   = req.getVersion();
     envMap_["SERVER_SOFTWARE"]   = "webserv/0.1";
     envMap_["QUERY_STRING"]      = req.getQuery();
+    envMap_["REQUEST_URI"]       = req.getPath() + (req.getQuery().empty() ? "" : "?" + req.getQuery());
     
-    // ADD THESE CRITICAL MISSING RFC 3875 VARIABLES HERE
-    envMap_["REQUEST_METHOD"]    = req.getMethod();  // <--- FIXES METHOD=GET TEST FAILURE
+    envMap_["REQUEST_METHOD"]    = req.getMethod();
     envMap_["SERVER_NAME"]       = "127.0.0.1";
     envMap_["SERVER_PORT"]       = "8080";
     envMap_["REMOTE_ADDR"]       = "127.0.0.1";
     
-    // PHP-CGI specifically requires SCRIPT_FILENAME to locate the file on disk
+    // Required by PHP-CGI
     envMap_["SCRIPT_FILENAME"]   = scriptPath_; 
-    
-    // PHP-CGI requires REDIRECT_STATUS=200 to execute properly (security feature)
     envMap_["REDIRECT_STATUS"]   = "200";
 
     // Set SCRIPT_NAME and PATH_INFO based on the resolved path from webserv.cpp
     envMap_["SCRIPT_NAME"]       = scriptName_;
-    envMap_["PATH_INFO"]         = pathInfo_;
+    envMap_["PATH_INFO"]         = pathInfo_.empty() ? req.getPath() : pathInfo_;
 
     // PATH_TRANSLATED is the filesystem path for the PATH_INFO.
     if (!pathInfo_.empty()) {
@@ -78,15 +95,11 @@ void CgiHandler::initEnv(const Request& req)
         envMap_["PATH_TRANSLATED"] = pathTranslated + pathInfo_;
     }
 
-    // 2. Handle the Body Size works dynamically for both normal and chunked!
-    // If there is a body, we use the size of our fully decoded unchunkedBody_
-    // because that represents the true size of the data we will pipe to the CGI.
+    // 2. Handle the Body Size
     if (req.getMethod() == "POST" || req.getMethod() == "PUT")
     {
         std::stringstream ss;
-        // Assuming you added getUnchunkedBody() earlier!
-        // If it's a normal request, you stored the body there too.
-        ss << req.getUnchunkedBody().size(); 
+        ss << req.getBodyLen(); 
         envMap_["CONTENT_LENGTH"] = ss.str();
         
         std::string contentType = req.getValFromMap("content-type");
@@ -109,9 +122,9 @@ void CgiHandler::initEnv(const Request& req)
                 key[i] = std::toupper(key[i]);
         }
         
-        // CONTENT_LENGTH and CONTENT_TYPE are special cases that don't get the HTTP_ prefix
-        if (key != "CONTENT_TYPE" && key != "CONTENT_LENGTH")
-            envMap_["HTTP_" + key] = it->second; // e.g., "HTTP_USER_AGENT"
+        // Exclude specific headers
+        if (key != "CONTENT_TYPE" && key != "CONTENT_LENGTH" && key != "TRANSFER_ENCODING")
+            envMap_["HTTP_" + key] = it->second;
     }
 }
 
@@ -165,8 +178,8 @@ void CgiHandler::executeCgi()
     // pipeOut: CGI writes to [1], Server reads from [0]
     if (pipe(pipeOut_) < 0)
     {
-        close(pipeIn_[0]);
-        close(pipeIn_[1]);
+        closeFd(pipeIn_[0]);
+        closeFd(pipeIn_[1]);
         throw HttpError(500);
     }
 
@@ -174,8 +187,10 @@ void CgiHandler::executeCgi()
     cgiPid_ = fork();
     if (cgiPid_ < 0)
     {
-        close(pipeIn_[0]); close(pipeIn_[1]);
-        close(pipeOut_[0]); close(pipeOut_[1]);
+        closeFd(pipeIn_[0]);
+        closeFd(pipeIn_[1]);
+        closeFd(pipeOut_[0]);
+        closeFd(pipeOut_[1]);
         throw HttpError(500);
     }
 
@@ -225,12 +240,10 @@ void CgiHandler::executeCgi()
     else
     {
         // A. Close the pipe ends the server doesn't need
-        close(pipeIn_[0]);  // Server doesn't read from CGI's stdin
-        close(pipeOut_[1]); // Server doesn't write to CGI's stdout
+        closeFd(pipeIn_[0]);  // Server doesn't read from CGI's stdin
+        closeFd(pipeOut_[1]); // Server doesn't write to CGI's stdout
 
         // B. Make the Server's ends NON-BLOCKING
-        // If the CGI script hangs, or if the client
-        // sends a massive body, standard read/write would freeze entire server.
         fcntl(pipeIn_[1], F_SETFL, O_NONBLOCK);
         fcntl(pipeOut_[0], F_SETFL, O_NONBLOCK);
     }

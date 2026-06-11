@@ -22,7 +22,7 @@ struct HeaderLimits
     size_t max_body;
     size_t max_uri; 
     HeaderLimits() : max_line(4096), max_fields(100),
-     max_total(32768), max_body(1048576), max_uri(2048) {}
+     max_total(32768), max_body(100485706), max_uri(2048) {}
 };
 
 
@@ -39,7 +39,10 @@ private:
     bool        chunkedCompleted_;
     size_t      currentChunkSize_;
     int         chunkState_;         // 0= ReadSize, 1=ReadData, 2=ReadCRLF
+    size_t      chunkedRawOffset_;
     std::string unchunkedBody_;
+    const char* body_view_ptr_;
+    size_t      body_view_len_;
 
     void    HeaderDuplicateCheckAndAppend(const std::string &key, const std::string &value);
 
@@ -67,11 +70,14 @@ public:
     size_t  getContentLength() const;
 
     bool    isChunked() const;
-    bool    parseChunkedBody(std::string& rawData, std::string& decodedBody);
+    bool    parseChunkedBody(const std::string& rawData);
+    size_t  getChunkedRawOffset() const { return chunkedRawOffset_; }
+    void    setChunkedRawOffset(size_t offset) { chunkedRawOffset_ = offset; }
     bool    isChunkedCompleted() const;
-    std::string& getUnchunkedBody();
-    const std::string& getUnchunkedBody() const;
-    void setUnchunkedBody(const std::string& b);
+
+    void        setBodyView(const char* ptr, size_t len);
+    const char* getBodyPtr() const;
+    size_t      getBodyLen() const;
 
     class ParseError : public HttpError
     {

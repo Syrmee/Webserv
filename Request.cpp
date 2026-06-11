@@ -1,7 +1,8 @@
 #include "Request.hpp"
 
 Request::Request() : isChunked_(false), chunkedCompleted_(false),
-                    currentChunkSize_(0), chunkState_(0)
+                    currentChunkSize_(0), chunkState_(0), chunkedRawOffset_(0),
+                    body_view_ptr_(NULL), body_view_len_(0)
 {
 }
 Request::~Request()
@@ -36,21 +37,25 @@ bool    Request::isChunked(void) const
 {
     return isChunked_;
 }
-bool    Request::isChunkedCompleted() const
+bool Request::isChunkedCompleted() const
 {
     return chunkedCompleted_;
 }
-std::string& Request::getUnchunkedBody()
+
+void Request::setBodyView(const char* ptr, size_t len)
 {
-    return unchunkedBody_; 
+    body_view_ptr_ = ptr;
+    body_view_len_ = len;
 }
-const std::string& Request::getUnchunkedBody() const
+
+const char* Request::getBodyPtr() const
 {
-    return unchunkedBody_;
+    return isChunked_ ? unchunkedBody_.c_str() : body_view_ptr_;
 }
-void Request::setUnchunkedBody(const std::string& b)
+
+size_t Request::getBodyLen() const
 {
-    unchunkedBody_ = b;
+    return isChunked_ ? unchunkedBody_.size() : body_view_len_;
 }
 
 std::string Request::getValFromMap(std::string key) const
@@ -366,6 +371,7 @@ void    Request::parseHeader(const char *buffer)
         chunkedCompleted_ = false;
         chunkState_ = 0;
         currentChunkSize_ = 0;
+        chunkedRawOffset_ = 0;
     }
     
     //printMap(); // for testing !
@@ -381,24 +387,23 @@ void    Request::parseHeader(const char *buffer)
  * - State 2: Expects the final empty chunk and trailing CRLF.
  *
  * rawData The raw data buffer from the socket, which is consumed as it's parsed.
- *  decodedBody The output string where the clean, decoded body is appended.
  * return `true` if the entire chunked body has been successfully parsed, `false` otherwise.
  */
-bool Request::parseChunkedBody(std::string& rawData, std::string& decodedBody)
+bool Request::parseChunkedBody(const std::string& rawData)
 {
-    while (!rawData.empty() && !chunkedCompleted_)
+    while (chunkedRawOffset_ < rawData.size() && !chunkedCompleted_)
     {
         // ---------------------------------------------------------
         // STATE 0: Read the Hexadecimal Size
         // ---------------------------------------------------------
         if (chunkState_ == 0)
         {
-            size_t pos = rawData.find("\r\n");
+            size_t pos = rawData.find("\r\n", chunkedRawOffset_);
             if (pos == std::string::npos)
                 return false; // Not enough data yet, wait for the next poll()
 
             // Extract the line containing the hex size
-            std::string hexLine = rawData.substr(0, pos);
+            std::string hexLine = rawData.substr(chunkedRawOffset_, pos - chunkedRawOffset_);
             
             // HTTP/1.1 allows "chunk extensions" (e.g., "1A;name=value"). 
             // We must ignore everything after the semicolon.
@@ -412,8 +417,8 @@ bool Request::parseChunkedBody(std::string& rawData, std::string& decodedBody)
             if (!(ss >> currentChunkSize_))
                 throw ParseError(400); // Invalid chunk size format
 
-            // Remove the size line and the "\r\n" from the raw buffer
-            rawData.erase(0, pos + 2);
+            // Advance offset past the size line and the "\r\n"
+            chunkedRawOffset_ = pos + 2;
 
             if (currentChunkSize_ == 0)
             {
@@ -432,14 +437,14 @@ bool Request::parseChunkedBody(std::string& rawData, std::string& decodedBody)
         else if (chunkState_ == 1)
         {
             // We wait until we have the full chunk data PLUS the trailing "\r\n"
-            if (rawData.size() < currentChunkSize_ + 2)
+            if (rawData.size() - chunkedRawOffset_ < currentChunkSize_ + 2)
                 return false; 
 
             // Extract exactly 'currentChunkSize_' bytes and append to our clean output
-            decodedBody += rawData.substr(0, currentChunkSize_);
+            unchunkedBody_.append(rawData, chunkedRawOffset_, currentChunkSize_);
 
-            // Erase the data AND the trailing "\r\n" from the raw socket buffer
-            rawData.erase(0, currentChunkSize_ + 2);
+            // Advance offset past the data AND the trailing "\r\n"
+            chunkedRawOffset_ += currentChunkSize_ + 2;
 
             // Go back to expecting a new size
             chunkState_ = 0;
@@ -450,12 +455,12 @@ bool Request::parseChunkedBody(std::string& rawData, std::string& decodedBody)
         else if (chunkState_ == 2)
         {
             // The final "0\r\n" is followed by an empty line "\r\n" (or trailing headers)
-            size_t pos = rawData.find("\r\n");
+            size_t pos = rawData.find("\r\n", chunkedRawOffset_);
             if (pos == std::string::npos)
                 return false;
 
-            // Remove the final "\r\n"
-            rawData.erase(0, pos + 2);
+            // Advance offset past the final "\r\n"
+            chunkedRawOffset_ = pos + 2;
             
             chunkedCompleted_ = true;
             return true; // We are completely done parsing the chunked body!
@@ -472,12 +477,15 @@ void    Request::reset()
     query_.clear();
     version_.clear();
     header_.clear();
-    unchunkedBody_.clear();
+    std::string().swap(unchunkedBody_);
 
     isChunked_ = false;
     chunkedCompleted_ = false;
     currentChunkSize_ = 0;
     chunkState_ = 0;
+    chunkedRawOffset_ = 0;
+    body_view_ptr_ = NULL;
+    body_view_len_ = 0;
 }
 std::string Request::trim(std::string str)
 {

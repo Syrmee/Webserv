@@ -8,7 +8,6 @@
 #include <dirent.h>
 #include <iostream>
 #include <sys/socket.h>
-#include <cerrno>
 
 // === string utilities ===
 std::string toLower(const std::string& key)
@@ -147,6 +146,10 @@ bool shouldKeepAlive(const Request& request, int status)
 
     if (status == 400 || status == 408 || status == 413 ||
         status == 414 || status == 431 || status >= 500)
+        return false;
+        
+    // Force close connection on errors during body-bearing requests.
+    if (status >= 400 && (request.getMethod() == "POST" || request.getMethod() == "PUT"))
         return false;
 
     if (version == "HTTP/1.1")
